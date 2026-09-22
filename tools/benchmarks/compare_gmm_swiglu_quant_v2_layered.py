@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import torch
 import argparse
 import importlib
 import json
@@ -19,12 +20,20 @@ DEFAULT_COUNTS = (17, 0, 63, 48)
 def _pack_int4(values: np.ndarray) -> np.ndarray:
     if values.shape[-1] % INT4_PER_INT32:
         raise ValueError("the final dimension must be divisible by 8")
-    shifts = np.arange(INT4_PER_INT32, dtype=np.uint32) * 4
     grouped = values.reshape(*values.shape[:-1], -1, INT4_PER_INT32)
-    packed = np.bitwise_or.reduce(
-        (grouped.astype(np.uint32) & 0xF) << shifts, axis=-1
+    if isinstance(values, np.ndarray):
+        shifts = np.arange(INT4_PER_INT32, dtype=np.uint32) * 4
+        packed = np.bitwise_or.reduce(
+            (grouped.astype(np.uint32) & 0xF) << shifts, axis=-1
+        )
+        return np.ascontiguousarray(packed.view(np.int32))
+  
+    packed = torch.zeros(
+        grouped.shape[:-1], dtype=torch.int32, device=values.device
     )
-    return np.ascontiguousarray(packed.view(np.int32))
+    for index in range(INT4_PER_INT32):
+        packed |= (grouped[..., index] & 0xF) << (index * 4)
+    return packed.contiguous()
 
 
 def _metrics(torch, actual, reference, atol: float, rtol: float) -> dict:
