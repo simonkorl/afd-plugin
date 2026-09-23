@@ -11,6 +11,8 @@ from pathlib import Path
 import numpy as np
 
 INT4_PER_INT32 = 8
+NZ_K_BLOCK = 16
+NZ_INT4_N_BLOCK = 64
 INT4_MIN = -8
 INT4_MAX = 8
 DEFAULT_COUNTS = (17, 0, 63, 48)
@@ -68,9 +70,21 @@ def _resolve_original(torch, name: str):
 
 def _invoke_original(op, inputs, group_list_type: int):
     x, weight, weight_scale, x_scale, group_list = inputs
+    nz_weights = []
+    for packed_weight in weight:
+        experts, hidden, packed_columns = packed_weight.shape
+        nz_weights.append(
+            packed_weight.reshape(
+                experts,
+                hidden // NZ_K_BLOCK,
+                NZ_K_BLOCK,
+                packed_columns // (NZ_INT4_N_BLOCK // INT4_PER_INT32),
+                NZ_INT4_N_BLOCK // INT4_PER_INT32,
+            ).permute(0, 3, 1, 2, 4).contiguous()
+        )
     return op(
         x,
-        weight,
+        nz_weights,
         weight_scale,
         x_scale,
         group_list,
