@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import torch
 import argparse
 import importlib
 import json
@@ -27,7 +26,8 @@ def _pack_int4(values: np.ndarray) -> np.ndarray:
             (grouped.astype(np.uint32) & 0xF) << shifts, axis=-1
         )
         return np.ascontiguousarray(packed.view(np.int32))
-  
+
+    import torch
     packed = torch.zeros(
         grouped.shape[:-1], dtype=torch.int32, device=values.device
     )
@@ -66,26 +66,25 @@ def _resolve_original(torch, name: str):
     return getattr(getattr(torch.ops, namespace), operator)
 
 
-def _invoke_original(op, inputs):
+def _invoke_original(op, inputs, group_list_type: int):
     x, weight, weight_scale, x_scale, group_list = inputs
     return op(
         x,
         weight,
         weight_scale,
-        None,
-        None,
         x_scale,
-        None,
         group_list,
-        0,
-        0,
-        0,
-        0,
-        None,
+        smooth_scale=None,
+        weight_assist_matrix=None,
+        bias=None,
+        dequant_mode=0,
+        quant_mode=0,
+        group_list_type=group_list_type,
+        tuning_config=None,
     )
 
 
-def _invoke_layered(torch, inputs, layer: int):
+def _invoke_layered(torch, inputs, layer: int, group_list_type: int):
     x, weights, scales, x_scale, group_list = inputs
     return torch.ops.afd_ascend.gmm_swiglu_quant_v2_layered(
         x,
@@ -97,7 +96,7 @@ def _invoke_layered(torch, inputs, layer: int):
         torch.tensor([layer], device=x.device, dtype=torch.int64),
         0,
         0,
-        0,
+        group_list_type,
         None,
     )
 
@@ -170,8 +169,10 @@ def main() -> int:
     for group_list_type, group_list in ((0, counts.cumsum(0)), (1, counts)):
         for layer in range(args.layers):
             original_inputs = (x, [weights[layer]], [scales[layer]], x_scale, group_list)
-            reference = _invoke_original(original, original_inputs)
-            actual = _invoke_layered(torch, (x, weights, scales, x_scale, group_list), layer)
+            reference = _invoke_original(original, original_inputs, group_list_type)
+            actual = _invoke_layered(
+                torch, (x, weights, scales, x_scale, group_list), layer, group_list_type
+            )
             reference_y, reference_scale = reference
             actual_y, actual_scale = actual
             quantized = _metrics(torch, actual_y, reference_y, args.atol, args.rtol)
